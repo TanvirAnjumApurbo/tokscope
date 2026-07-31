@@ -20,8 +20,8 @@ All notable changes to skiagram are documented here. Versions follow Semantic Ve
   representable rate is now reported as unpriced instead of using a generic multiplier.
 - LiteLLM refresh imports explicit cache prices and long-context tiers only; it no longer derives
   Anthropic-style cache multipliers for other providers.
-- WinGet release documentation now records the required manual workflow dispatch and Microsoft
-  review delay; the workflow no longer defaults to a stale release tag.
+- WinGet release documentation now records the required explicit-tag workflow dispatch and
+  Microsoft review delay.
 
 ### Notes
 
