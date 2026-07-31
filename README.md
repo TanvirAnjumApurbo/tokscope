@@ -27,8 +27,10 @@ Local-first. Single static binary. <strong>Nothing ever leaves your machine.</st
 <a href="#install"><strong>Install</strong></a> ·
 <a href="#usage"><strong>Usage</strong></a> ·
 <a href="#how-it-works"><strong>How it works</strong></a> ·
+<a href="docs/pricing.md"><strong>Pricing</strong></a> ·
 <a href="#agents"><strong>Agents</strong></a> ·
-<a href="#contributing"><strong>Contributing</strong></a>
+<a href="#contributing"><strong>Contributing</strong></a> ·
+<a href="CHANGELOG.md"><strong>Changelog</strong></a>
 </p>
 
 </div>
@@ -76,8 +78,8 @@ spend by that factor. skiagram:
   up to ~10×, and lumping them quietly inflates or deflates your bill.
 - **Attributes extended-thinking tokens** as a *measured* share of output (they're already inside
   `output_tokens`, verified on 2,268 real requests, so we never invent a phantom undercount).
-- **Treats absence as unknown, not zero.** A missing usage field becomes a stated *lower bound*; a
-  model missing from the price snapshot is listed as *unpriced*, never guessed.
+- **Treats absence as unknown, not zero.** A missing usage field becomes a stated *lower bound*;
+  requests missing a model or required token-category rate are listed as *unpriced*, never guessed.
 
 ### 🧱 Context-bloat attribution
 
@@ -142,8 +144,13 @@ scoop bucket add skiagram https://github.com/TanvirAnjumApurbo/scoop-bucket && s
 **Windows (winget):**
 
 ```bash
-winget install TanvirAnjumApurbo.skiagram
+winget install --exact --id TanvirAnjumApurbo.skiagram
+winget upgrade --exact --id TanvirAnjumApurbo.skiagram
 ```
+
+New WinGet manifests can appear after the matching GitHub release because each version is reviewed
+in `microsoft/winget-pkgs`. Check availability with
+`winget show --exact --id TanvirAnjumApurbo.skiagram --versions`.
 
 **Windows (PowerShell installer):**
 
@@ -277,8 +284,11 @@ the picture and the table can never disagree.
 - **Dedup rule.** Assistant lines are grouped by `requestId`; usage counters take the field-wise
   **MAX** (lines either repeat identical usage or grow monotonically while streaming). Lines without
   a `requestId` are never merged.
-- **Cache pricing.** cache-read ~0.1× input, 5-minute cache-write ~1.25× input, 1-hour cache-write
-  ~2× input. Each is priced separately from an embedded snapshot of public prices.
+- **Provider-aware cache pricing.** Cache reads and writes use each provider's published rates;
+  unsupported dimensions are never filled with generic multipliers. Anthropic's 5-minute and
+  1-hour writes, OpenAI cache writes, and Google cached reads remain distinct.
+- **Long-context pricing.** Provider-published thresholds are applied to the whole known prompt;
+  skiagram currently supports OpenAI's above-272K and Gemini's above-200K tiers.
 - **Thinking tokens.** Claude Code's `output_tokens` *already includes* extended-thinking tokens
   (verified), so we never add an estimate on top. When an agent reports thinking as a *separate*
   count (Codex, Gemini), we keep it disjoint so the sum still balances.
@@ -286,8 +296,13 @@ the picture and the table can never disagree.
   models are listed, not guessed.
 - **Estimates, not invoices.** Costs come from public pricing and are labeled as estimates.
 
-The embedded price snapshot keeps the default build fully **offline**. `--refresh-pricing` (behind the
-opt-in `network` feature) updates it from LiteLLM and caches the result for later offline runs.
+The embedded price snapshot keeps package-manager and default source builds fully **offline**. The
+`v0.1.2` snapshot covers the current Claude 5, GPT-5.6/5.5/5.4, and Gemini
+3.6/3.5 plus 3.1 Pro API models.
+See the exact model IDs, rates, dates, tiers, and official sources in [Pricing](docs/pricing.md).
+`--refresh-pricing` updates an opt-in custom build from LiteLLM and caches the result for later
+offline runs; it is available only when compiling with `--features network`, not in prebuilt
+package-manager binaries.
 
 ---
 
@@ -413,13 +428,15 @@ pricing; no terminal I/O, no network) and **`skiagram`** (the CLI + TUI binary t
 
 ## 🗺️ Project status
 
-**skiagram `v0.1.0` is the first public release.** It ships:
+**skiagram `v0.1.2` is the current release.** It ships:
 
 - Correct, deduplicated token + cost accounting
 - Adapters for **Claude Code**, **Codex CLI**, **Gemini CLI**, and **Copilot CLI**
 - Context-window bloat attribution, sub-agent attribution, anomaly detection, and task classification
 - Flamegraph SVG export, an interactive TUI, and live-tail (`watch`)
 - A config file, optional online pricing refresh, and a fully offline default build
+- Provider-aware pricing for Claude 5, GPT-5.6/5.5/5.4, and Gemini 3.6/3.5 plus 3.1 Pro, including
+  cache-token categories and published long-context tiers
 
 **Planned next:** a Cursor adapter (waiting on usable per-request token data), refreshable-pricing UX
 polish, and a homebrew-core submission.

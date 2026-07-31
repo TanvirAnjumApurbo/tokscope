@@ -19,7 +19,7 @@ pub fn print(summary: &Summary) {
         summary.sessions_parsed,
         since
     );
-    println!("local-only · read-only · costs estimated from the embedded pricing snapshot\n");
+    println!("local-only · read-only · costs estimated from the active pricing table\n");
 
     if summary.totals.requests == 0 {
         println!("no usage data found — nothing to report.");
@@ -232,7 +232,7 @@ fn warnings(summary: &Summary) {
     if !summary.unpriced_models.is_empty() {
         let models: Vec<_> = summary.unpriced_models.iter().cloned().collect();
         notes.push(format!(
-            "unpriced models (not in the embedded snapshot; cost shown is a lower bound): {}",
+            "unpriced models (unknown model or missing token-category rate; cost shown is a lower bound): {}",
             models.join(", ")
         ));
     }

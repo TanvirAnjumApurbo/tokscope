@@ -29,7 +29,8 @@
 //!     `total` deltas equal `last`).
 //!
 //! So we emit ONE [`EventKind::Assistant`] event per `token_count`, carrying
-//! `last_token_usage` mapped DISJOINTLY into [`Usage`] (see [`map_last_usage`]) so
+//! `last_token_usage` mapped DISJOINTLY into [`Usage`] (including the newer
+//! `cache_write_input_tokens` subset; see [`map_last_usage`]) so
 //! that summing every per-request `known_total()` reconstructs the FINAL
 //! cumulative `total_token_usage.total_tokens`. No `request_id` is attached —
 //! these are genuinely distinct requests and downstream dedup keys each one
@@ -40,9 +41,8 @@
 //! tiny gap versus the final cumulative (compaction rewrites the window); that
 //! gap is acceptable and surfaced, never hidden.
 //!
-//! Codex models are `gpt-*` and are NOT in skiagram's embedded pricing snapshot,
-//! so their cost renders as "unpriced" — that is correct and honest (§8.7): we
-//! never guess a price.
+//! Public OpenAI model IDs present in the embedded snapshot are priced; private
+//! product aliases without an official token rate remain visibly unpriced (§8.7).
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -469,12 +469,14 @@ fn mcp_tool_call(raw: &RawLine) -> Option<ToolCall> {
 /// so `known_total()` equals its `total_tokens` and summing per-request totals
 /// reconstructs the session's cumulative `total_tokens`.
 ///
-/// OpenAI convention: `cached_input_tokens ⊆ input_tokens` and
-/// `reasoning_output_tokens ⊆ output_tokens`, with
+/// OpenAI convention: `cached_input_tokens` and `cache_write_input_tokens` are
+/// disjoint subsets of `input_tokens`; `reasoning_output_tokens ⊆ output_tokens`;
+/// and
 /// `total_tokens == input_tokens + output_tokens`. We therefore split the
 /// overlapping subsets out so nothing is double counted:
 ///   - `cache_read = cached_input_tokens`
-///   - `input      = input_tokens − cached_input_tokens`   (saturating)
+///   - `cache_creation = cache_write_input_tokens`
+///   - `input      = input_tokens − cached − cache_write`   (saturating)
 ///   - `thinking   = reasoning_output_tokens`
 ///   - `output     = output_tokens − reasoning_output_tokens` (saturating)
 ///
@@ -482,11 +484,14 @@ fn mcp_tool_call(raw: &RawLine) -> Option<ToolCall> {
 /// never panic on bad data — CLAUDE.md §9.
 fn map_last_usage(last: &RawTokenUsage) -> Usage {
     let cached = last.cached_input_tokens.unwrap_or(0);
+    let cache_write = last.cache_write_input_tokens.unwrap_or(0);
     let reasoning = last.reasoning_output_tokens.unwrap_or(0);
     Usage {
-        input: last.input_tokens.map(|i| i.saturating_sub(cached)),
+        input: last
+            .input_tokens
+            .map(|i| i.saturating_sub(cached).saturating_sub(cache_write)),
         output: last.output_tokens.map(|o| o.saturating_sub(reasoning)),
-        cache_creation: None,
+        cache_creation: last.cache_write_input_tokens,
         cache_creation_5m: None,
         cache_creation_1h: None,
         cache_read: last.cached_input_tokens,
@@ -554,6 +559,7 @@ struct RawTokenInfo {
 struct RawTokenUsage {
     input_tokens: Option<u64>,
     cached_input_tokens: Option<u64>,
+    cache_write_input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     reasoning_output_tokens: Option<u64>,
     #[allow(dead_code)]
@@ -579,16 +585,17 @@ mod tests {
         let last = RawTokenUsage {
             input_tokens: Some(2000),
             cached_input_tokens: Some(500),
+            cache_write_input_tokens: Some(250),
             output_tokens: Some(300),
             reasoning_output_tokens: Some(100),
             total_tokens: Some(2300),
         };
         let u = map_last_usage(&last);
         assert_eq!(u.cache_read, Some(500));
-        assert_eq!(u.input, Some(1500), "input minus cached subset");
+        assert_eq!(u.cache_creation, Some(250));
+        assert_eq!(u.input, Some(1250), "input minus cached + written subsets");
         assert_eq!(u.thinking, Some(100));
         assert_eq!(u.output, Some(200), "output minus reasoning subset");
-        assert_eq!(u.cache_creation, None, "Codex has no cache-creation split");
         assert_eq!(
             u.known_total(),
             2300,
@@ -602,6 +609,7 @@ mod tests {
         let last = RawTokenUsage {
             input_tokens: Some(100),
             cached_input_tokens: Some(250),
+            cache_write_input_tokens: Some(40),
             output_tokens: Some(40),
             reasoning_output_tokens: Some(90),
             total_tokens: Some(140),

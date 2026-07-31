@@ -57,9 +57,10 @@ fn summary_json_has_exact_cumulative_totals() {
     // so summing them reconstructs Codex's cumulative spend (no ~100x overcount).
     //   main session deltas: (1000/0/200/50) + (2000/500/300/100) + (3000/1000/500/0)
     //   archived:            (800/200/100/0)
-    // mapped to Usage {input = in-cached, cache_read = cached, output = out-reason,
-    // thinking = reason}:
-    //   input        = (1000+1500+2000) + 600  = 5100
+    // mapped to Usage {input = in-cached-written, cache_read = cached,
+    // cache_creation = written, output = out-reason, thinking = reason}:
+    //   input        = (900+1300+2000) + 600   = 4800
+    //   cache_write  = (100+200+0)      + 0    = 300
     //   cache_read   = (0+500+1000)      + 200  = 1700
     //   output       = (150+200+500)     + 100  = 950
     //   thinking is tracked on the request but Rollup.total_tokens excludes it.
@@ -67,9 +68,9 @@ fn summary_json_has_exact_cumulative_totals() {
         v["totals"]["requests"], 4,
         "3 main token_counts + 1 archived"
     );
-    assert_eq!(v["totals"]["input"], 5100);
+    assert_eq!(v["totals"]["input"], 4800);
     assert_eq!(v["totals"]["output"], 950);
-    assert_eq!(v["totals"]["cache_creation"], 0);
+    assert_eq!(v["totals"]["cache_creation"], 300);
     assert_eq!(v["totals"]["cache_read"], 1700);
 
     // Codex never has a request_id on these events, so dedup never merges them:
@@ -87,24 +88,22 @@ fn summary_json_has_exact_cumulative_totals() {
     // context_compacted → one compaction.
     assert_eq!(v["compactions"], 1);
 
-    // gpt-* models are NOT in the embedded snapshot → unpriced, never guessed.
+    // The public GPT-5.6 model is priced from the official standard table. The
+    // private `gpt-5.5-codex` product alias has no published API token price and
+    // therefore remains unpriced rather than inheriting `gpt-5.5`.
     let unpriced = v["unpriced_models"].as_array().expect("array");
-    assert!(
-        unpriced.iter().any(|m| m == "gpt-5.5"),
-        "gpt-5.5 must be surfaced as unpriced: {unpriced:?}"
-    );
     assert!(
         unpriced.iter().any(|m| m == "gpt-5.5-codex"),
         "gpt-5.5-codex must be surfaced as unpriced: {unpriced:?}"
     );
     assert_eq!(
-        v["totals"]["unpriced_requests"], 4,
-        "all 4 requests on unpriced gpt models"
+        v["totals"]["unpriced_requests"], 1,
+        "only the private model alias is unpriced"
     );
-    assert_eq!(
-        v["totals"]["cost_usd"].as_f64().expect("float"),
-        0.0,
-        "no priced spend — cost is honestly zero, not guessed"
+    let cost = v["totals"]["cost_usd"].as_f64().expect("float");
+    assert!(
+        (cost - 0.053625).abs() < 1e-12,
+        "GPT-5.6 input/read/write/output rates must all contribute, got {cost}"
     );
 
     // MCP-server attribution survives: the mcp__acme-db__query call is bucketed
@@ -116,18 +115,18 @@ fn summary_json_has_exact_cumulative_totals() {
     );
 
     // Models surfaced per-model.
-    assert!(v["by_model"].get("gpt-5.5").is_some());
+    assert!(v["by_model"].get("gpt-5.6-sol").is_some());
     assert!(v["by_model"].get("gpt-5.5-codex").is_some());
 }
 
 #[test]
-fn summary_table_renders_unpriced_gpt_models() {
+fn summary_table_renders_priced_and_unpriced_gpt_models() {
     skiagram()
         .args(["summary", "--agent", "codex"])
         .assert()
         .success()
         // The model shows up in the human-readable table...
-        .stdout(predicate::str::contains("gpt-5.5"))
+        .stdout(predicate::str::contains("gpt-5.6-sol"))
         // ...and the unpriced-models notice names it (cost not guessed, §8.7).
         .stdout(predicate::str::contains("unpriced models"));
 }

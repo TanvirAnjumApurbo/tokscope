@@ -36,7 +36,7 @@ pub struct Rollup {
     pub incomplete_requests: u64,
     /// USD cost of the requests whose model has a known price.
     pub cost_usd: f64,
-    /// Requests that could not be priced (model unknown or not in the snapshot).
+    /// Requests that could not be fully priced (unknown model or missing rate).
     pub unpriced_requests: u64,
 }
 
@@ -111,8 +111,8 @@ pub struct Summary {
     /// into their parent's row.
     pub by_session: Vec<SessionSummary>,
     pub by_tool: BTreeMap<String, ToolStat>,
-    /// Models we refused to price (not in the embedded snapshot — §8.7 forbids
-    /// guessing).
+    /// Models with at least one request we refused to price (unknown model or a
+    /// nonzero token category without a published rate — §8.7 forbids guessing).
     pub unpriced_models: BTreeSet<String>,
     pub compactions: u64,
 }
@@ -231,7 +231,9 @@ pub fn aggregate(
                     .add(rec, pricing);
             }
             if let Some(model) = &rec.model {
-                if pricing.lookup(model).is_none() {
+                // A known model can still be unpriceable when this request uses a
+                // provider-specific token category for which no public rate exists.
+                if pricing.cost_usd(Some(model), &rec.usage).is_none() {
                     summary.unpriced_models.insert(model.clone());
                 }
             }

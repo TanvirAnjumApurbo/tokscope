@@ -2,7 +2,7 @@
 //! (CLAUDE.md §6 "Fat tail", roadmap v0.3).
 //!
 //! Every figure here is MEASURED: deduplicated token counts and prices traced to
-//! the embedded snapshot (§8.7). Unlike `context`, there are no estimated
+//! the active pricing table (§8.7). Unlike `context`, there are no estimated
 //! (chars/4) numbers in this view.
 //!
 //! The section-header strings (`CONCENTRATION`, `HEAVIEST REQUESTS`, `RETRY
@@ -29,7 +29,7 @@ pub fn print(report: &AnomalyReport) {
         fmt_count(report.requests_analyzed),
         since
     );
-    println!("deduplicated (per-request) token counts · cost from the embedded pricing snapshot\n");
+    println!("deduplicated (per-request) token counts · cost from the active pricing table\n");
 
     if report.requests_analyzed == 0 {
         println!("no usage data found — nothing to report.");
@@ -267,7 +267,7 @@ fn notes(report: &AnomalyReport) {
     let mut notes = Vec::new();
     if report.has_unpriced {
         notes.push(
-            "some requests use an unpriced model (not in the embedded snapshot); \
+            "some requests lack an applicable model or token-category rate; \
              cost figures are lower bounds"
                 .to_string(),
         );

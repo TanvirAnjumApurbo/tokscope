@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use skiagram_core::pricing::{ModelPricing, PricingTable};
+use skiagram_core::pricing::{LongContextPricing, ModelPricing, PricingTable};
 
 /// Upstream price table (BerriAI/LiteLLM mirror of public pricing — CLAUDE.md §7).
 #[cfg(feature = "network")]
@@ -52,9 +52,28 @@ struct PricingCache {
 struct CachedPrice {
     input: f64,
     output: f64,
-    cache_read: f64,
-    cache_write_5m: f64,
-    cache_write_1h: f64,
+    #[serde(default)]
+    cache_read: Option<f64>,
+    #[serde(default)]
+    cache_write_5m: Option<f64>,
+    #[serde(default)]
+    cache_write_1h: Option<f64>,
+    #[serde(default)]
+    long_context: Option<CachedLongContext>,
+}
+
+/// Optional higher rates for prompts beyond a provider-published threshold.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedLongContext {
+    input_threshold: u64,
+    input: f64,
+    output: f64,
+    #[serde(default)]
+    cache_read: Option<f64>,
+    #[serde(default)]
+    cache_write_5m: Option<f64>,
+    #[serde(default)]
+    cache_write_1h: Option<f64>,
 }
 
 impl From<CachedPrice> for ModelPricing {
@@ -65,6 +84,14 @@ impl From<CachedPrice> for ModelPricing {
             cache_read: c.cache_read,
             cache_write_5m: c.cache_write_5m,
             cache_write_1h: c.cache_write_1h,
+            long_context: c.long_context.map(|tier| LongContextPricing {
+                input_threshold: tier.input_threshold,
+                input: tier.input,
+                output: tier.output,
+                cache_read: tier.cache_read,
+                cache_write_5m: tier.cache_write_5m,
+                cache_write_1h: tier.cache_write_1h,
+            }),
         }
     }
 }
@@ -141,10 +168,9 @@ fn refresh_now() -> Result<String> {
 }
 
 /// Parse the LiteLLM JSON into our cache shape. LiteLLM costs are per-token; we
-/// store per-million (×1e6) to match [`ModelPricing`]. When LiteLLM doesn't break
-/// out the 1h cache-write TTL, it is derived from the 5m write via Anthropic's
-/// published ratio (1h = 2× input, 5m = 1.25× input ⇒ 1h = 1.6× 5m) — documented so
-/// every figure still traces to a published price (§8.7).
+/// store per-million (×1e6) to match [`ModelPricing`]. Every cache and long-context
+/// rate is read only from an explicit upstream field: provider-specific gaps stay
+/// `None` instead of receiving Anthropic-derived multipliers (§8.7).
 #[cfg(feature = "network")]
 fn parse_litellm(body: &str) -> Result<PricingCache> {
     use anyhow::Context;
@@ -163,8 +189,37 @@ fn parse_litellm(body: &str) -> Result<PricingCache> {
         ) else {
             continue;
         };
-        let cache_read = per_m(v, "cache_read_input_token_cost").unwrap_or(input * 0.1);
-        let cache_write_5m = per_m(v, "cache_creation_input_token_cost").unwrap_or(input * 1.25);
+        let cache_read = per_m(v, "cache_read_input_token_cost");
+        let cache_write_5m = per_m(v, "cache_creation_input_token_cost");
+        let cache_write_1h = per_m(v, "cache_creation_input_token_cost_above_1hr");
+
+        // OpenAI publishes >272K tiers; Google publishes >200K tiers. Require
+        // both input and output fields so a partial upstream row cannot silently
+        // produce a mixed-rate request.
+        let mut long_context = None;
+        for (input_threshold, suffix) in [
+            (272_000, "above_272k_tokens"),
+            (200_000, "above_200k_tokens"),
+        ] {
+            let input_key = format!("input_cost_per_token_{suffix}");
+            let output_key = format!("output_cost_per_token_{suffix}");
+            let (Some(long_input), Some(long_output)) =
+                (per_m(v, &input_key), per_m(v, &output_key))
+            else {
+                continue;
+            };
+            let cache_read_key = format!("cache_read_input_token_cost_{suffix}");
+            let cache_write_key = format!("cache_creation_input_token_cost_{suffix}");
+            long_context = Some(CachedLongContext {
+                input_threshold,
+                input: long_input,
+                output: long_output,
+                cache_read: per_m(v, &cache_read_key),
+                cache_write_5m: per_m(v, &cache_write_key),
+                cache_write_1h: None,
+            });
+            break;
+        }
         models.insert(
             name.clone(),
             CachedPrice {
@@ -172,7 +227,8 @@ fn parse_litellm(body: &str) -> Result<PricingCache> {
                 output,
                 cache_read,
                 cache_write_5m,
-                cache_write_1h: cache_write_5m * 1.6,
+                cache_write_1h,
+                long_context,
             },
         );
     }
@@ -216,17 +272,17 @@ mod tests {
         assert!(table
             .cost_usd(Some("claude-sonnet-4-5"), &Default::default())
             .is_some());
-        assert!(table.lookup("gpt-5.5").is_none());
+        assert!(table.lookup("future-model-without-a-price").is_none());
     }
 
     #[test]
     fn cache_overrides_apply_and_price_a_new_model() {
-        // A normally-unpriced model (gpt-5.5) becomes priced via a cache override.
+        // A normally-unpriced synthetic model becomes priced via a cache override.
         let json = r#"{
             "source": "test",
             "refreshed_at": "2026-06-16T00:00:00Z",
             "models": {
-                "gpt-5.5": { "input": 1.0, "output": 2.0, "cache_read": 0.1, "cache_write_5m": 1.25, "cache_write_1h": 2.0 }
+                "test-new-model": { "input": 1.0, "output": 2.0, "cache_read": 0.1, "cache_write_5m": 1.25, "cache_write_1h": 2.0 }
             }
         }"#;
         let p = write_cache("ov.json", json);
@@ -239,7 +295,9 @@ mod tests {
             ..Default::default()
         };
         // 1.0 + 2.0 per million each = $3.00, where the embedded snapshot had nothing.
-        let cost = table.cost_usd(Some("gpt-5.5"), &usage).expect("now priced");
+        let cost = table
+            .cost_usd(Some("test-new-model"), &usage)
+            .expect("now priced");
         assert!((cost - 3.0).abs() < 1e-9, "got {cost}");
         // The embedded snapshot still wins for models not in the override set.
         assert!(table.lookup("claude-sonnet-4-5").is_some());
@@ -251,5 +309,39 @@ mod tests {
         let p = write_cache("bad.json", "{ not valid json ");
         assert!(load_overrides(&p).is_none());
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn litellm_parser_preserves_provider_specific_rates_and_tiers() {
+        let json = r#"{
+            "gpt-5.6-sol": {
+                "input_cost_per_token": 0.000005,
+                "output_cost_per_token": 0.000030,
+                "cache_read_input_token_cost": 0.0000005,
+                "cache_creation_input_token_cost": 0.00000625,
+                "input_cost_per_token_above_272k_tokens": 0.000010,
+                "output_cost_per_token_above_272k_tokens": 0.000045,
+                "cache_read_input_token_cost_above_272k_tokens": 0.000001,
+                "cache_creation_input_token_cost_above_272k_tokens": 0.0000125
+            },
+            "gemini-3.6-flash": {
+                "input_cost_per_token": 0.0000015,
+                "output_cost_per_token": 0.0000075,
+                "cache_read_input_token_cost": 0.00000015
+            }
+        }"#;
+        let cache = parse_litellm(json).expect("valid LiteLLM subset");
+        let openai = cache.models.get("gpt-5.6-sol").expect("OpenAI row");
+        assert_eq!(openai.cache_write_5m, Some(6.25));
+        assert_eq!(openai.cache_write_1h, None, "no invented Anthropic TTL");
+        let long = openai.long_context.as_ref().expect("272K tier");
+        assert_eq!(long.input_threshold, 272_000);
+        assert_eq!(long.output, 45.0);
+
+        let gemini = cache.models.get("gemini-3.6-flash").expect("Gemini row");
+        assert_eq!(gemini.cache_read, Some(0.15));
+        assert_eq!(gemini.cache_write_5m, None, "no invented cache write");
+        assert_eq!(gemini.cache_write_1h, None, "no invented 1h rate");
     }
 }

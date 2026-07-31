@@ -66,13 +66,14 @@ fn summary_json_has_exact_deduplicated_numbers() {
     // request — honestly marked incomplete, not silently zeroed (§8.5).
     assert_eq!(v["totals"]["incomplete_requests"], 2);
 
-    // gemini-* isn't in the embedded snapshot → unpriced, never guessed (§8.7).
+    // This historical preview model has modality-dependent input prices, while
+    // the CLI log has no modality split. It stays unpriced rather than guessed.
     assert_eq!(v["totals"]["unpriced_requests"], 2);
     assert_eq!(v["totals"]["cost_usd"].as_f64().expect("float"), 0.0);
     let unpriced = v["unpriced_models"].as_array().expect("array");
     assert!(
         unpriced.iter().any(|m| m == "gemini-3-flash-preview"),
-        "gemini-3-flash-preview must be surfaced as unpriced: {unpriced:?}"
+        "modality-dependent preview must be surfaced as unpriced: {unpriced:?}"
     );
 
     // Dedup proof-of-work: the adapter already collapsed g1's re-serialization by
@@ -96,7 +97,7 @@ fn summary_json_has_exact_deduplicated_numbers() {
 }
 
 #[test]
-fn summary_table_renders_unpriced_gemini_model() {
+fn summary_table_renders_unpriced_modality_dependent_gemini_model() {
     skiagram()
         .args(["summary", "--agent", "gemini"])
         .assert()

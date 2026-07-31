@@ -2,7 +2,7 @@
 //! (CLAUDE.md §2 "where did it go / why is context full", roadmap v0.3).
 //!
 //! Spend here is MEASURED: deduplicated per-request token counts priced from the
-//! embedded snapshot (§8.1/§8.7). The *labels*, by contrast, are explicitly
+//! active pricing table (§8.1/§8.7). The *labels*, by contrast, are explicitly
 //! heuristic — inferred from each session's tool mix + prompt keywords, with no
 //! ground truth in the files — so this view stays honest the same way the core
 //! does: an [`TaskType::Unknown`] bucket, a confidence score, and the matched
@@ -34,7 +34,7 @@ pub fn print(report: &ClassifyReport) {
     );
     println!(
         "heuristic — activity inferred from tool mix + prompt keywords; spend is \
-         deduplicated & priced from the embedded snapshot\n"
+         deduplicated & priced from the active pricing table\n"
     );
 
     if report.sessions_classified == 0 {
@@ -200,8 +200,8 @@ fn notes(report: &ClassifyReport) {
     let mut notes = Vec::new();
     if report.has_unpriced {
         notes.push(
-            "some classified sessions use an unpriced model (not in the embedded \
-             snapshot); cost figures are lower bounds"
+            "some classified sessions lack an applicable model or token-category \
+             rate; cost figures are lower bounds"
                 .to_string(),
         );
     }

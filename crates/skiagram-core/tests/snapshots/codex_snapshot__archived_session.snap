@@ -41,7 +41,7 @@ expression: session
       "usage": {
         "input": 600,
         "output": 100,
-        "cache_creation": null,
+        "cache_creation": 0,
         "cache_creation_5m": null,
         "cache_creation_1h": null,
         "cache_read": 200,

@@ -28,7 +28,7 @@ fn parses_main_session_fixture() {
     // Hard guarantees before the snapshot: lenient skipping + model surfaced from
     // turn_context, project from session_meta cwd.
     assert_eq!(session.skipped_lines, 2, "1 corrupt + 1 unknown-type line");
-    assert_eq!(session.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(session.model.as_deref(), Some("gpt-5.6-sol"));
     assert_eq!(session.project.as_deref(), Some("/home/dev/acme-app"));
 
     // THE reconciliation invariant (Codex analog of §8.1): summing the per-request

@@ -1,8 +1,8 @@
 //! End-to-end test that a cached pricing override (what `--refresh-pricing` writes)
-//! actually flows through the whole pipeline and changes the cost numbers: a
-//! normally-unpriced Codex (gpt-*) session becomes priced once the cache supplies a
-//! price. Fully offline — uses a synthetic cache fixture via `$SKIAGRAM_PRICING_CACHE`,
-//! never the network.
+//! actually flows through the whole pipeline and changes the cost numbers. The
+//! public GPT-5.6 fixture is embedded-priced; a private Codex alias remains
+//! unpriced until the synthetic cache supplies an explicit override. Fully
+//! offline — `$SKIAGRAM_PRICING_CACHE` never touches the network.
 
 use std::path::{Path, PathBuf};
 
@@ -35,29 +35,24 @@ fn codex_summary(cache: Option<&str>) -> Value {
 }
 
 #[test]
-fn cached_override_prices_a_normally_unpriced_codex_session() {
-    // Baseline: the embedded snapshot has no gpt-* prices, so every request is
-    // unpriced and the total cost is exactly zero.
+fn cached_override_replaces_embedded_rates_and_prices_a_private_alias() {
+    // Baseline: official GPT-5.6 is priced, while the private product alias has
+    // no published API rate and stays visibly unpriced.
     let base = codex_summary(None);
-    assert_eq!(
-        base["totals"]["cost_usd"].as_f64().expect("float"),
-        0.0,
-        "gpt-* is unpriced in the embedded snapshot"
-    );
-    assert!(
-        base["totals"]["unpriced_requests"].as_u64().expect("int") > 0,
-        "baseline has unpriced requests"
-    );
+    let base_cost = base["totals"]["cost_usd"].as_f64().expect("float");
+    assert!(base_cost > 0.0, "public GPT-5.6 uses embedded pricing");
+    assert_eq!(base["totals"]["unpriced_requests"], 1);
     assert!(
         !base["unpriced_models"].as_array().unwrap().is_empty(),
-        "baseline surfaces unpriced gpt models"
+        "baseline surfaces the private alias"
     );
 
-    // With the cached override, the SAME session is now priced end-to-end.
+    // The cache overrides GPT-5.6's embedded rates and adds the private alias.
     let priced = codex_summary(Some("pricing/litellm-cache.json"));
+    let override_cost = priced["totals"]["cost_usd"].as_f64().expect("float");
     assert!(
-        priced["totals"]["cost_usd"].as_f64().expect("float") > 0.0,
-        "the override must flow through to cost"
+        (override_cost - base_cost).abs() > 1e-9,
+        "the override must replace embedded rates end-to-end"
     );
     assert_eq!(
         priced["totals"]["unpriced_requests"].as_u64().expect("int"),

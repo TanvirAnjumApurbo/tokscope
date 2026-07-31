@@ -24,7 +24,7 @@
 //! - **Tokens** — deduplicated token counts. Always known, never a pricing guess
 //!   (§8.7); unknown fields contribute 0 (absence ≠ zero, §8.5).
 //! - **Cost** — estimated USD in MICRO-dollars (1e-6 USD) so the weight stays an
-//!   integer. Priced from the embedded snapshot; a request on an unpriced model
+//!   integer. Priced from the active pricing table; an unpriceable request
 //!   contributes nothing and is counted in [`FlameData::unpriced_requests`]
 //!   rather than guessed at (§8.7). Per-token-type cost mirrors
 //!   [`crate::pricing::cost_usd`] exactly so the two never drift.
@@ -51,7 +51,7 @@ pub enum FlameMetric {
     #[default]
     Tokens,
     /// Estimated USD cost, in MICRO-dollars (1e-6 USD) so it stays an integer
-    /// weight. Priced from the embedded snapshot; unpriced requests contribute
+    /// weight. Priced from the active pricing table; unpriced requests contribute
     /// nothing and are counted in `unpriced_requests` (§8.5/§8.7).
     Cost,
 }
@@ -127,7 +127,7 @@ pub struct FlameData {
     pub stacks: Vec<FoldedStack>,
     /// Sum of all `stacks[].value` (matches the emitted stacks exactly).
     pub total_value: u64,
-    /// Requests dropped from a Cost flamegraph because their model is unpriced.
+    /// Requests dropped from a Cost flamegraph because no complete price applies.
     /// Always 0 for the Tokens metric.
     pub unpriced_requests: u64,
 }
@@ -165,12 +165,21 @@ fn sanitize_frame(frame: &str) -> String {
 /// Cache-write cost in micro-USD, mirroring [`crate::pricing::cost_usd`] exactly:
 /// use the per-TTL split when the agent reports it, else price the whole total at
 /// the (cheaper) 5m rate so an unsplit figure stays a lower bound.
-fn cache_write_micro_usd(usage: &Usage, p: &pricing::ModelPricing) -> f64 {
+fn priced_micro_usd(tokens: u64, rate: Option<f64>) -> Option<f64> {
+    match (tokens, rate) {
+        (0, _) => Some(0.0),
+        (n, Some(rate)) => Some(n as f64 * rate),
+        (_, None) => None,
+    }
+}
+
+fn cache_write_micro_usd(usage: &Usage, p: &pricing::EffectivePricing) -> Option<f64> {
     match (usage.cache_creation_5m, usage.cache_creation_1h) {
-        (None, None) => usage.cache_creation.unwrap_or(0) as f64 * p.cache_write_5m,
-        (m5, h1) => {
-            m5.unwrap_or(0) as f64 * p.cache_write_5m + h1.unwrap_or(0) as f64 * p.cache_write_1h
-        }
+        (None, None) => priced_micro_usd(usage.cache_creation.unwrap_or(0), p.cache_write_5m),
+        (m5, h1) => Some(
+            priced_micro_usd(m5.unwrap_or(0), p.cache_write_5m)?
+                + priced_micro_usd(h1.unwrap_or(0), p.cache_write_1h)?,
+        ),
     }
 }
 
@@ -180,27 +189,30 @@ fn cache_write_micro_usd(usage: &Usage, p: &pricing::ModelPricing) -> f64 {
 /// `tokens * rate` already yields micro-USD. Thinking bills at the output rate,
 /// mirroring [`crate::pricing::cost_usd`]. `cache-write` uses the request total
 /// (the 5m/1h fields are a breakdown of it, not added again — §8.4).
-fn leaves(usage: &Usage, pricing: Option<&pricing::ModelPricing>) -> [Leaf; 5] {
+fn leaves(usage: &Usage, pricing: Option<&pricing::ModelPricing>) -> Option<[Leaf; 5]> {
     let input = usage.input.unwrap_or(0);
     let output = usage.output.unwrap_or(0);
     let cache_read = usage.cache_read.unwrap_or(0);
     let cache_write = usage.cache_creation.unwrap_or(0);
     let thinking = usage.thinking.unwrap_or(0);
 
-    // Cost weights are 0 unless the model is priced; callers skip whole records
-    // for unpriced models, so these are only consulted for priced ones.
+    // Cost weights are 0 unless the request is fully priceable; callers skip whole
+    // unpriceable records, so these are only consulted for priceable ones.
     let (c_in, c_out, c_read, c_write, c_think) = match pricing {
-        Some(p) => (
-            input as f64 * p.input,
-            output as f64 * p.output,
-            cache_read as f64 * p.cache_read,
-            cache_write_micro_usd(usage, p),
-            thinking as f64 * p.output,
-        ),
+        Some(p) => {
+            let rates = pricing::effective_pricing(p, usage);
+            (
+                input as f64 * rates.input,
+                output as f64 * rates.output,
+                priced_micro_usd(cache_read, rates.cache_read)?,
+                cache_write_micro_usd(usage, &rates)?,
+                thinking as f64 * rates.output,
+            )
+        }
         None => (0.0, 0.0, 0.0, 0.0, 0.0),
     };
 
-    [
+    Some([
         Leaf {
             label: "input",
             tokens: input,
@@ -226,7 +238,7 @@ fn leaves(usage: &Usage, pricing: Option<&pricing::ModelPricing>) -> [Leaf; 5] {
             tokens: thinking,
             micro_usd: c_think,
         },
-    ]
+    ])
 }
 
 /// Fold sessions into flamegraph data. See module docs for the rules.
@@ -239,7 +251,7 @@ fn leaves(usage: &Usage, pricing: Option<&pricing::ModelPricing>) -> [Leaf; 5] {
 /// frame folds sub-agent transcripts into their parent (§8.3) and is shortened
 /// to a readable prefix ([`short_session`]); omitting [`Dim::Type`] sums the
 /// token-types into the innermost structural frame. Under the Cost metric, a
-/// request whose model is unpriced is skipped entirely and counted in
+/// request that cannot be fully priced is skipped entirely and counted in
 /// `unpriced_requests` — prices are never guessed (§8.7).
 pub fn fold(
     sessions: &[Session],
@@ -259,11 +271,15 @@ pub fn fold(
     for session in sessions {
         let (records, _stats) = dedup_session(session, filter.since);
         for rec in records {
-            // Cost: refuse to price an unknown model — count it and skip (§8.7).
+            // Cost: refuse unknown models or missing category rates (§8.7).
             let pricing = match metric {
                 FlameMetric::Tokens => None,
                 FlameMetric::Cost => {
-                    match rec.model.as_deref().and_then(|m| pricing_table.lookup(m)) {
+                    match rec
+                        .model
+                        .as_deref()
+                        .and_then(|model| pricing_table.lookup(model))
+                    {
                         Some(p) => Some(p),
                         None => {
                             unpriced_requests += 1;
@@ -284,7 +300,11 @@ pub fn fold(
                 short_session(rec.parent_session.as_deref().unwrap_or(&rec.session_id));
             let model = rec.model.clone().unwrap_or_else(|| UNKNOWN_MODEL.into());
 
-            for leaf in leaves(&rec.usage, pricing) {
+            let Some(leaves) = leaves(&rec.usage, pricing) else {
+                unpriced_requests += 1;
+                continue;
+            };
+            for leaf in leaves {
                 let weight = match metric {
                     FlameMetric::Tokens => leaf.tokens as f64,
                     FlameMetric::Cost => leaf.micro_usd,
@@ -522,6 +542,48 @@ mod tests {
             "flame cost {} vs pricer {expected}",
             d.total_value
         );
+    }
+
+    #[test]
+    fn cost_metric_applies_long_context_tier_and_reconciles() {
+        let u = usage(272_001, 1_000_000, 0, 0);
+        let mut event = turn("long", u);
+        event.model = Some("gpt-5.6-sol".into());
+        let s = session("s", None, vec![event]);
+        let d = fold(
+            &[s],
+            &Filter::default(),
+            "codex",
+            FlameMetric::Cost,
+            DIMS,
+            &PricingTable::embedded(),
+        );
+        let expected = pricing::cost_usd(Some("gpt-5.6-sol"), &u).unwrap() * 1e6;
+        assert_eq!(d.unpriced_requests, 0);
+        assert!((d.total_value as f64 - expected).abs() <= 2.0);
+        assert_eq!(
+            leaf_value(&d, "proj", "s", "gpt-5.6-sol", "output"),
+            Some(45_000_000)
+        );
+    }
+
+    #[test]
+    fn cost_metric_skips_known_model_when_required_rate_is_missing() {
+        let u = usage(1_000, 100, 0, 50);
+        let mut event = turn("missing-rate", u);
+        event.model = Some("gpt-5.5".into());
+        let s = session("s", None, vec![event]);
+        let d = fold(
+            &[s],
+            &Filter::default(),
+            "codex",
+            FlameMetric::Cost,
+            DIMS,
+            &PricingTable::embedded(),
+        );
+        assert!(d.stacks.is_empty());
+        assert_eq!(d.total_value, 0);
+        assert_eq!(d.unpriced_requests, 1);
     }
 
     /// Thinking tokens bill at the OUTPUT rate under the Cost metric (mirrors

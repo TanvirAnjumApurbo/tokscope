@@ -122,8 +122,8 @@ pub struct AnomalyReport {
     /// Total priced cost across analyzed requests; a lower bound when
     /// `has_unpriced` is true.
     pub total_cost_usd: f64,
-    /// At least one analyzed request had no price (model unknown / not in the
-    /// snapshot) — cost figures are lower bounds (§8.5/§8.7).
+    /// At least one analyzed request lacked a model or applicable token-category
+    /// rate — cost figures are lower bounds (§8.5/§8.7).
     pub has_unpriced: bool,
     /// Top-fraction concentration, ascending by `request_fraction`.
     pub concentration: Vec<ConcentrationBucket>,

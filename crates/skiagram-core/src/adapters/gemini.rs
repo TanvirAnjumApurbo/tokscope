@@ -54,8 +54,9 @@
 //! still gets `request_id = Some(id)` for traceability; downstream dedup then sees
 //! one line per request and is a no-op.
 //!
-//! `gemini-*` models are NOT in skiagram's embedded pricing snapshot, so their
-//! cost renders as "unpriced" — correct and honest (§8.7): we never guess a price.
+//! Stable/current Gemini model IDs with modality-compatible public rates are
+//! priced by the embedded snapshot. Preview/private aliases or models whose
+//! modality-specific bill cannot be inferred from the log remain unpriced (§8.7).
 
 use std::collections::HashMap;
 use std::fs::File;
