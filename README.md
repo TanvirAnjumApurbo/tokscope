@@ -30,6 +30,7 @@ Local-first. Single static binary. <strong>Nothing ever leaves your machine.</st
 <a href="docs/pricing.md"><strong>Pricing</strong></a> ·
 <a href="#agents"><strong>Agents</strong></a> ·
 <a href="#contributing"><strong>Contributing</strong></a> ·
+<a href="release.md"><strong>Releases</strong></a> ·
 <a href="CHANGELOG.md"><strong>Changelog</strong></a>
 </p>
 

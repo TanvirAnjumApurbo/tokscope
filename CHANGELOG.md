@@ -1,6 +1,8 @@
 # Changelog
 
-All notable changes to skiagram are documented here. Versions follow Semantic Versioning.
+All notable changes to skiagram are documented here. Versions follow Semantic Versioning. See
+[`release.md`](release.md) for the permanent detailed history, tag commits, artifacts, and
+distribution record for every public version.
 
 ## [0.1.2] - 2026-07-31
 
